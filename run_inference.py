@@ -71,16 +71,22 @@ def inference_model(
     
     # ========== 匯出結果 ==========
     print_header("💾 匯出結果")
-    
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
+
+    # 確保輸出資料夾存在（如果有的話）
+    output_dir = "outputs"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"📁 已建立輸出資料夾: {output_dir}")
+
     if output_format == "csv":
-        output_file = f"predictions_{timestamp}.csv"
+        output_file = os.path.join(output_dir, f"predictions_{timestamp}.csv")
         inference_engine.export_predictions_to_csv(predictions, output_file)
     elif output_format == "json":
-        output_file = f"predictions_{timestamp}.json"
+        output_file = os.path.join(output_dir, f"predictions_{timestamp}.json")
         inference_engine.export_predictions_to_json(predictions, output_file)
-    
+
     print(f"✅ 結果已匯出: {output_file}")
 
 

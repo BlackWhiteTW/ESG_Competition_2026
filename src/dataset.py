@@ -165,6 +165,7 @@ class ESGDataset(Dataset):
         
         # ========== 提取時間軸標籤 ==========
         verification_timeline = item.get('verification_timeline', 'N/A')
+        # 0: already, 1: within_2_years, 2: between_2_and_5_years, 3: more_than_5_years, 4: N/A
         timeline_label = {
             'already': 0,
             'within_2_years': 1,
@@ -175,6 +176,7 @@ class ESGDataset(Dataset):
         
         # ========== 提取證據品質標籤 ==========
         evidence_quality = item.get('evidence_quality', 'N/A')
+        # 0: Clear, 1: Not Clear, 2: Misleading, 3: N/A
         quality_label = {
             'Clear': 0,
             'Not Clear': 1,
