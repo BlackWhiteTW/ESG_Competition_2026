@@ -9,11 +9,13 @@ import torch
 from torch.utils.data import DataLoader
 
 # 將 src 目錄加入 Python 路徑
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 from dataset import ESGDataset
 from model import ESGMultiTaskModel
 from train import create_data_splits
+from inference import ESGInference
+from analyzer import ESGMockEvaluator
 
 
 def print_header(message: str):
@@ -29,10 +31,10 @@ def evaluate_model(
     batch_size: int = 8
 ):
     """評估模型主函式"""
-    print_header("📊 開始評估流程")
+    print_header("開始評估流程")
     
     if not os.path.exists(json_file):
-        print(f"❌ 錯誤：找不到資料: {json_file}")
+        print(f"錯誤：找不到資料: {json_file}")
         return
     
     # ========== 載入資料並分割 ==========
@@ -51,10 +53,10 @@ def evaluate_model(
         seed=42
     )
     
-    print(f"✅ 驗證集已載入: {len(val_dataloader.dataset)} 筆樣本")
+    print(f"驗證集已載入: {len(val_dataloader.dataset)} 筆樣本")
     
     # ========== 載入模型 ==========
-    print_header("🧠 載入模型")
+    print_header("載入模型")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = ESGMultiTaskModel(
@@ -64,16 +66,25 @@ def evaluate_model(
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"✅ 模型已載入: {checkpoint_path}")
+        print(f"模型已載入: {checkpoint_path}")
     else:
-        print(f"❌ 錯誤: 檢查點不存在 {checkpoint_path}")
+        print(f"錯誤: 檢查點不存在 {checkpoint_path}")
         return
         
     model.to(device)
     model.eval()
     
-    # ========== 執行驗證 ==========
-    print_header("🚀 執行驗證")
+    # ========== [新增] 執行模擬評分與錯誤歸納 ==========
+    # 支援單一模型或集成模型
+    checkpoint_paths = [checkpoint_path]
+    inference_engine = ESGInference(model, checkpoint_paths, device)
+    evaluator = ESGMockEvaluator(inference_engine)
+    
+    # 從 DataLoader 中還原原始的 Dataset 物件進行分析
+    evaluator.analyze_performance(val_dataloader.dataset)
+    
+    # ========== 執行損失驗證 ==========
+    print_header("執行損失驗證")
     
     total_loss = 0.0
     task_losses = {
@@ -105,11 +116,8 @@ def evaluate_model(
     # ========== 顯示結果 ==========
     avg_loss = total_loss / len(val_dataloader)
     print(f"\n平均總驗證損失: {avg_loss:.4f}")
-    print("\n任務損失明細:")
-    for k, v in task_losses.items():
-        print(f"  - {k:20s}: {v / len(val_dataloader):.4f}")
     
-    print_header("✅ 評估完成")
+    print_header("評估完成")
 
 
 if __name__ == "__main__":

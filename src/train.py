@@ -84,30 +84,30 @@ class ESGTrainer:
 
         if train_scope == "heads-only":
             for parameter in encoder_params:
-                parameter.requires_grad = False
-            optimizer_grouped_params = [
-                {
-                    'params': head_params,
-                    'lr': learning_rate,
-                    'weight_decay': 0.01
-                }
-            ]
-        else:
-            for parameter in encoder_params:
-                parameter.requires_grad = True
-            optimizer_grouped_params = [
-                {
-                    'params': encoder_params,
-                    'lr': learning_rate,
-                    'weight_decay': 0.01
-                },
-                {
-                    'params': head_params,
-                    'lr': learning_rate * head_learning_rate_multiplier,
-                    'weight_decay': 0.01
-                }
-            ]
-        
+                head_learning_rate_multiplier: float = 5.0,
+                ...
+                optimizer_grouped_params = [
+                    {
+                        'params': head_params,
+                        'lr': learning_rate,
+                        'weight_decay': 0.1
+                    }
+                ]
+                else:
+                for parameter in encoder_params:
+                    parameter.requires_grad = True
+                optimizer_grouped_params = [
+                    {
+                        'params': encoder_params,
+                        'lr': learning_rate,
+                        'weight_decay': 0.1
+                    },
+                    {
+                        'params': head_params,
+                        'lr': learning_rate * head_learning_rate_multiplier,
+                        'weight_decay': 0.1
+                    }
+                ]
         self.optimizer = AdamW(optimizer_grouped_params)
         
         # 計算總訓練步數（含尾批次）
@@ -267,10 +267,10 @@ class ESGTrainer:
         if is_best:
             best_path = os.path.join(self.checkpoint_dir, "best_model.pt")
             torch.save(checkpoint, best_path)
-            print(f"\n✅ 最佳模型已保存: {best_path}")
+            print(f"\n[SUCCESS] 最佳模型已保存: {best_path}")
             print(f"   最佳驗證損失: {self.best_val_loss:.4f}")
         
-        print(f"✅ 檢查點已保存: {temp_path}")
+        print(f"[SUCCESS] 檢查點已保存: {temp_path}")
     
     def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, int]:
         """
@@ -280,7 +280,7 @@ class ESGTrainer:
             (起始 Epoch, 起始步驟)
         """
         if not os.path.exists(checkpoint_path):
-            print(f"⚠️  檢查點不存在: {checkpoint_path}")
+            print(f"[WARNING] 檢查點不存在: {checkpoint_path}")
             return 0, 0
         
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -302,8 +302,8 @@ class ESGTrainer:
         step = checkpoint['step']
         next_epoch = epoch + 1
         
-        print(f"✅ 檢查點已載入: {checkpoint_path}")
-        print(f"🔄 已完成到 Epoch {epoch + 1}，將從 Epoch {next_epoch + 1} 繼續訓練")
+        print(f"[SUCCESS] 檢查點已載入: {checkpoint_path}")
+        print(f"[INFO] 已完成到 Epoch {epoch + 1}，將從 Epoch {next_epoch + 1} 繼續訓練")
         
         return next_epoch, step
     
@@ -321,7 +321,7 @@ class ESGTrainer:
             start_epoch, _ = self.load_checkpoint(resume_from_checkpoint)
         
         print("\n" + "=" * 80)
-        print("🚀 開始訓練")
+        print("[START] 開始訓練")
         print("=" * 80)
         print(f"設備: {self.device}")
         print(f"訓練範圍: {self.train_scope}")
@@ -360,11 +360,11 @@ class ESGTrainer:
             self.save_checkpoint(epoch, len(self.train_dataloader), is_best=is_best)
 
             if self.bad_epochs >= self.early_stopping_patience:
-                print(f"\n⏹️  觸發 Early Stopping：連續 {self.bad_epochs} 個 epoch 無改善")
+                print(f"\n[STOP] 觸發 Early Stopping：連續 {self.bad_epochs} 個 epoch 無改善")
                 break
         
         print("\n" + "=" * 80)
-        print("✅ 訓練完成！")
+        print("[SUCCESS] 訓練完成！")
         print(f"最佳驗證損失: {self.best_val_loss:.4f}")
         print("=" * 80)
         
@@ -374,6 +374,34 @@ class ESGTrainer:
             json.dump(self.training_history, f, indent=2)
         print(f"\n訓練歷史已保存: {history_path}")
 
+
+def create_kfold_splits(
+    dataset: ESGDataset,
+    num_folds: int = 5,
+    fold_idx: int = 0,
+    batch_size: int = 8,
+    seed: int = 42
+) -> Tuple[DataLoader, DataLoader]:
+    """
+    將資料集切分為 K-Fold 的其中一折
+    """
+    from sklearn.model_selection import KFold
+    
+    indices = np.arange(len(dataset))
+    kf = KFold(n_splits=num_folds, shuffle=True, random_state=seed)
+    
+    # 取得特定折的索引
+    all_splits = list(kf.split(indices))
+    train_indices, val_indices = all_splits[fold_idx]
+    
+    from torch.utils.data import Subset
+    train_dataset = Subset(dataset, train_indices)
+    val_dataset = Subset(dataset, val_indices)
+    
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    
+    return train_dataloader, val_dataloader
 
 def create_data_splits(
     dataset: ESGDataset,

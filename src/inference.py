@@ -13,57 +13,31 @@ from model import ESGMultiTaskModel
 
 class ESGInference:
     """
-    ESG 模型推理器
-    
-    功能：
-    1. 載入訓練好的模型
-    2. 對測試資料進行預測
-    3. 將模型輸出轉換為可提交的格式
-    4. 邊界情況處理 (post-processing)
+    ESG 模型推理器 (整合版)
+    支援單一模型推理與多模型集成 (Ensemble)。
     """
     
     def __init__(
         self,
         model: ESGMultiTaskModel,
-        checkpoint_path: str,
+        checkpoint_paths: List[str], # 改為接收一個路徑列表
         device: str = "cuda" if torch.cuda.is_available() else "cpu"
     ):
-        """
-        初始化推理器
-        
-        Args:
-            model: RoBERTa 多任務模型
-            checkpoint_path: 訓練好的模型檢查點
-            device: 計算設備
-        """
         self.model = model.to(device)
         self.device = device
+        self.checkpoint_paths = [p for p in checkpoint_paths if os.path.exists(p)]
         
-        # 載入檢查點
-        if os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location=device)
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"✅ 模型已載入: {checkpoint_path}")
+        if not self.checkpoint_paths:
+            print("[WARNING] 警告: 找不到任何有效的模型檢查點！")
         else:
-            print(f"⚠️  警告: 檢查點不存在 {checkpoint_path}")
+            print(f"[SUCCESS] 集成引擎初始化完成，共載入 {len(self.checkpoint_paths)} 個模型。")
         
         self.model.eval()
         
-        # Token 到標籤的映射
+        # 標籤映射保持不變...
         self.esg_labels = {0: 'E', 1: 'S', 2: 'G'}
-        self.timeline_labels = {
-            0: 'already',
-            1: 'within_2_years',
-            2: 'between_2_and_5_years',
-            3: 'more_than_5_years',
-            4: 'N/A'
-        }
-        self.quality_labels = {
-            0: 'Clear',
-            1: 'Not Clear',
-            2: 'Misleading',
-            3: 'N/A'
-        }
+        self.timeline_labels = {0: 'already', 1: 'within_2_years', 2: 'between_2_and_5_years', 3: 'more_than_5_years', 4: 'N/A'}
+        self.quality_labels = {0: 'Clear', 1: 'Not Clear', 2: 'Misleading', 3: 'N/A'}
     
     def predict_batch(
         self,
@@ -72,7 +46,7 @@ class ESGInference:
         evidence_threshold: float = 0.5
     ) -> Dict[str, torch.Tensor]:
         """
-        批次預測
+        批次集成預測 (平均所有模型的 Logits)
         """
         batch_input = {
             'input_ids': batch['input_ids'].to(self.device),
@@ -80,84 +54,95 @@ class ESGInference:
             'token_type_ids': batch['token_type_ids'].to(self.device)
         }
         
-        with torch.no_grad():
-            outputs = self.model(
-                input_ids=batch_input['input_ids'],
-                attention_mask=batch_input['attention_mask'],
-                token_type_ids=batch_input['token_type_ids']
-            )
+        # 初始化累積 Logits 字典
+        ensemble_logits = {}
+        task_keys = [
+            'promise_logits', 'promise_bio_logits', 
+            'evidence_logits', 'evidence_bio_logits',
+            'esg_logits', 'timeline_logits', 'quality_logits'
+        ]
         
+        # 遍歷所有模型進行推理
+        with torch.no_grad():
+            for i, ckpt in enumerate(self.checkpoint_paths):
+                # 載入該折的權重
+                checkpoint = torch.load(ckpt, map_location=self.device)
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+                
+                outputs = self.model(
+                    input_ids=batch_input['input_ids'],
+                    attention_mask=batch_input['attention_mask'],
+                    token_type_ids=batch_input['token_type_ids']
+                )
+                
+                # 累積 Logits
+                for key in task_keys:
+                    if key not in ensemble_logits:
+                        ensemble_logits[key] = outputs[key] / len(self.checkpoint_paths)
+                    else:
+                        ensemble_logits[key] += outputs[key] / len(self.checkpoint_paths)
+        
+        # ========== 基於平均 Logits 進行最後判定 ==========
         predictions = {}
         
-        # Promise Detection
-        promise_probs = torch.softmax(outputs['promise_logits'], dim=1)
+        promise_probs = torch.softmax(ensemble_logits['promise_logits'], dim=1)
         predictions['promise_status'] = (promise_probs[:, 1] > promise_threshold).int()
         
-        # Promise Extraction (Token-level argmax)
-        predictions['promise_start'] = outputs['promise_start_logits'].argmax(dim=1)
-        predictions['promise_end'] = outputs['promise_end_logits'].argmax(dim=1)
-        
-        # Evidence Detection
-        evidence_probs = torch.softmax(outputs['evidence_logits'], dim=1)
+        evidence_probs = torch.softmax(ensemble_logits['evidence_logits'], dim=1)
         predictions['evidence_status'] = (evidence_probs[:, 1] > evidence_threshold).int()
         
-        # Evidence Extraction (Token-level argmax)
-        predictions['evidence_start'] = outputs['evidence_start_logits'].argmax(dim=1)
-        predictions['evidence_end'] = outputs['evidence_end_logits'].argmax(dim=1)
+        predictions['promise_bio'] = ensemble_logits['promise_bio_logits'].argmax(dim=-1)
+        predictions['evidence_bio'] = ensemble_logits['evidence_bio_logits'].argmax(dim=-1)
         
-        # ESG Classification
-        predictions['esg_label'] = outputs['esg_logits'].argmax(dim=1)
-        
-        # Timeline Classification
-        predictions['timeline_label'] = outputs['timeline_logits'].argmax(dim=1)
-
-        # Quality Classification
-        predictions['quality_label'] = outputs['quality_logits'].argmax(dim=1)
+        predictions['esg_label'] = ensemble_logits['esg_logits'].argmax(dim=1)
+        predictions['timeline_label'] = ensemble_logits['timeline_logits'].argmax(dim=1)
+        predictions['quality_label'] = ensemble_logits['quality_logits'].argmax(dim=1)
         
         return predictions
     
-    def span_to_text(
+    def decode_bio_to_text(
         self,
         text: str,
-        tokens: List[int],
-        offset_mapping: List[Tuple[int, int]],
-        start_idx: int,
-        end_idx: int
+        bio_tags: List[int],
+        offset_mapping: List[Tuple[int, int]]
     ) -> str:
         """
-        將 Token 索引範圍轉換回原文字串
-        
-        Args:
-            text: 原始文本
-            tokens: Token IDs
-            offset_mapping: Tokenizer 的字元偏移映射
-            start_idx: 開始 Token 索引
-            end_idx: 結束 Token 索引
-        
-        Returns:
-            對應的文本片段
+        將 BIO 標籤序列還原為文本片段 (支援非連續)
+        0: O, 1: B, 2: I
         """
-        # offset_mapping 可能是 Tensor，轉為 list
         if isinstance(offset_mapping, torch.Tensor):
             offset_mapping = offset_mapping.tolist()
+        if isinstance(bio_tags, torch.Tensor):
+            bio_tags = bio_tags.tolist()
             
-        if start_idx >= len(offset_mapping) or end_idx > len(offset_mapping):
-            return ""
+        spans = []
+        current_span_start = -1
+        current_span_end = -1
         
-        # 取得開始位置的字元位置
-        start_char = offset_mapping[start_idx][0]
-        # 取得結束位置的字元位置
-        # 注意：我們使用 [start, end) 區間
-        end_idx_clamped = min(end_idx, len(offset_mapping) - 1)
-        end_char = offset_mapping[end_idx_clamped][1]
-        
-        if start_char == 0 and end_char == 0 and start_idx != 0:
-            return ""
+        for i, tag in enumerate(bio_tags):
+            # 略過特殊 Token
+            if offset_mapping[i] == [0, 0] and i != 0: continue
             
-        if start_char >= len(text):
-            return ""
+            if tag == 1: # B: 開始新片段
+                if current_span_start != -1:
+                    spans.append(text[offset_mapping[current_span_start][0]:offset_mapping[current_span_end][1]])
+                current_span_start = i
+                current_span_end = i
+            elif tag == 2: # I: 延續片段
+                if current_span_start != -1:
+                    current_span_end = i
+            else: # O: 結束片段
+                if current_span_start != -1:
+                    spans.append(text[offset_mapping[current_span_start][0]:offset_mapping[current_span_end][1]])
+                    current_span_start = -1
+                    
+        # 處理最後一個片段
+        if current_span_start != -1:
+            spans.append(text[offset_mapping[current_span_start][0]:offset_mapping[current_span_end][1]])
             
-        return text[start_char:min(end_char, len(text))]
+        # 過濾空字串並用 | 連結
+        valid_spans = [s.strip() for s in spans if s.strip()]
+        return " | ".join(valid_spans)
     
     def inference_on_dataset(
         self,
@@ -167,94 +152,54 @@ class ESGInference:
         evidence_threshold: float = 0.5
     ) -> List[Dict]:
         """
-        在整個測試集上進行推理
-        
-        Args:
-            test_dataset: 測試資料集
-            batch_size: 批次大小
-            promise_threshold: 承諾檢測閾值
-            evidence_threshold: 證據檢測閾值
-        
-        Returns:
-            預測結果列表
+        在整個測試集上進行推理 (BIO 版)
         """
-        test_dataloader = DataLoader(
-            test_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=0
-        )
-        
+        test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         all_predictions = []
         
         with torch.no_grad():
             for batch in tqdm(test_dataloader, desc="推理中"):
-                # 取得批次預測
-                batch_predictions = self.predict_batch(
-                    batch,
-                    promise_threshold=promise_threshold,
-                    evidence_threshold=evidence_threshold
-                )
+                batch_preds = self.predict_batch(batch, promise_threshold, evidence_threshold)
                 
-                # 轉換為 CPU 並轉換為相應格式
-                batch_size_actual = batch['input_ids'].shape[0]
-                
-                for i in range(batch_size_actual):
-                    # 提取文字片段
+                for i in range(batch['input_ids'].shape[0]):
+                    offsets = batch['offset_mapping'][i]
+                    text_raw = batch['text'][i]
+                    
+                    is_promise = batch_preds['promise_status'][i].item() == 1
+                    is_evidence = batch_preds['evidence_status'][i].item() == 1
+                    
+                    # BIO 解碼
                     promise_str = ""
+                    if is_promise:
+                        promise_str = self.decode_bio_to_text(text_raw, batch_preds['promise_bio'][i], offsets)
+                        
                     evidence_str = ""
-                    
-                    is_promise = batch_predictions['promise_status'][i].item() == 1
-                    is_evidence = batch_predictions['evidence_status'][i].item() == 1
-                    
-                    if 'offset_mapping' in batch:
-                        offsets = batch['offset_mapping'][i]
-                        text_raw = batch['text'][i]
-                        tokens = batch['input_ids'][i]
-                        
-                        if is_promise:
-                            p_start = batch_predictions['promise_start'][i].item()
-                            p_end = batch_predictions['promise_end'][i].item()
-                            promise_str = self.span_to_text(text_raw, tokens, offsets, p_start, p_end)
-                        
-                        if is_evidence:
-                            e_start = batch_predictions['evidence_start'][i].item()
-                            e_end = batch_predictions['evidence_end'][i].item()
-                            evidence_str = self.span_to_text(text_raw, tokens, offsets, e_start, e_end)
+                    if is_evidence:
+                        evidence_str = self.decode_bio_to_text(text_raw, batch_preds['evidence_bio'][i], offsets)
 
-                    # ID 處理
+                    # ID 與 規則處理
                     sample_id = batch['id'][i]
-                    if isinstance(sample_id, torch.Tensor):
-                        sample_id = sample_id.item()
+                    if isinstance(sample_id, torch.Tensor): sample_id = sample_id.item()
                     
-                    # 規則：如果無承諾，timeline 必須是 N/A
-                    timeline_val = self.timeline_labels.get(batch_predictions['timeline_label'][i].item(), 'N/A')
-                    if not is_promise:
-                        timeline_val = 'N/A'
-                        promise_str = ""
-                        
-                    # 規則：如果無證據，quality 必須是 N/A
-                    quality_val = self.quality_labels.get(batch_predictions['quality_label'][i].item(), 'N/A')
-                    if not is_evidence:
-                        quality_val = 'N/A'
-                        evidence_str = ""
+                    timeline_val = self.timeline_labels.get(batch_preds['timeline_label'][i].item(), 'N/A')
+                    if not is_promise: timeline_val = 'N/A'
+                    
+                    quality_val = self.quality_labels.get(batch_preds['quality_label'][i].item(), 'N/A')
+                    if not is_evidence: quality_val = 'N/A'
 
-                    pred_dict = {
+                    all_predictions.append({
                         'index': sample_id,
                         'URL': batch['url'][i],
-                        'page_number': batch['page_number'][i] if isinstance(batch['page_number'][i], int) else batch['page_number'][i].item(),
-                        'data': batch['text'][i],
-                        'ESG_type': self.esg_labels.get(batch_predictions['esg_label'][i].item(), 'S'),
+                        'page_number': int(batch['page_number'][i]),
+                        'data': text_raw,
+                        'ESG_type': self.esg_labels.get(batch_preds['esg_label'][i].item(), 'S'),
                         'promise_status': 'Yes' if is_promise else 'No',
                         'promise_string': promise_str,
                         'verification_timeline': timeline_val,
                         'evidence_status': 'Yes' if is_evidence else 'No',
                         'evidence_string': evidence_str,
                         'evidence_quality': quality_val,
-                    }
-                    
-                    all_predictions.append(pred_dict)
-        
+                    })
         return all_predictions
     
     def export_predictions_to_csv(
@@ -283,7 +228,7 @@ class ESGInference:
         
         # 競賽規範：UTF-8（無 BOM）、Unix 換行符 (\n)
         df.to_csv(output_path, index=False, encoding='utf-8', lineterminator='\n')
-        print(f"✅ 預測結果已保存: {output_path}")
+        print(f"[SUCCESS] 預測結果已保存: {output_path}")
         print(f"預測數量: {len(df)}")
     
     def export_predictions_to_json(
@@ -301,68 +246,88 @@ class ESGInference:
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(predictions, f, ensure_ascii=False, indent=2)
         
-        print(f"✅ 預測結果已保存: {output_path}")
+        print(f"[SUCCESS] 預測結果已保存: {output_path}")
         print(f"預測數量: {len(predictions)}")
 
 
 class ThresholdOptimizer:
     """
-    最佳閾值搜尋器
-    
-    競賽中，調整承諾和證據檢測的概率閾值（不使用固定的 0.5）
-    往往能顯著提升 F1-Score
+    最佳門檻搜尋器
+    透過在驗證集上測試不同門檻，找出能最大化官方 TOTAL_SCORE 的參數。
     """
     
-    def __init__(self, inference_engine: ESGInference):
-        """
-        初始化閾值優化器
-        
-        Args:
-            inference_engine: 推理引擎
-        """
+    def __init__(self, inference_engine, evaluator):
         self.inference_engine = inference_engine
+        self.evaluator = evaluator
     
     def find_optimal_threshold(
         self,
-        val_dataset: ESGDataset,
-        batch_size: int = 8,
-        thresholds: List[float] = None
+        val_dataset: ESGDataset
     ) -> Dict[str, float]:
         """
-        搜尋最佳閾值
-        
-        Args:
-            val_dataset: 驗證資料集
-            batch_size: 批次大小
-            thresholds: 要搜尋的閾值列表
-        
-        Returns:
-            最佳閾值字典
+        自動二維層級式搜尋 (Promise & Evidence 雙門檻優化)
         """
-        if thresholds is None:
-            thresholds = [0.3, 0.4, 0.5, 0.6, 0.7]
-        
-        best_f1 = 0.0
-        best_thresholds = {'promise': 0.5, 'evidence': 0.5}
-        
-        val_dataloader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=0
-        )
-        
+        def search_2d(p_range, e_range, p_step, e_step, label):
+            nonlocal best_score, best_p, best_e
+            p_thresholds = np.arange(p_range[0], p_range[1] + p_step/2, p_step)
+            e_thresholds = np.arange(e_range[0], e_range[1] + e_step/2, e_step)
+            
+            print(f"\n[階層 {label}] P-範圍: {p_range}, E-範圍: {e_range}")
+            
+            curr_best_p, curr_best_e = p_range[0], e_range[0]
+            curr_best_score = -1.0
+            
+            for pt in p_thresholds:
+                for et in e_thresholds:
+                    if pt < 0 or pt > 1 or et < 0 or et > 1: continue
+                    # 執行模擬評分，傳入雙門檻
+                    # 注意：我們需要 evaluator 支援 evidence_threshold
+                    report = self.evaluator.analyze_performance(
+                        val_dataset, silent=True, 
+                        promise_threshold=pt, 
+                        evidence_threshold=et
+                    )
+                    score = report['TOTAL_SCORE']
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_p, best_e = pt, et
+                    
+                    if score > curr_best_score:
+                        curr_best_score = score
+                        curr_best_p, curr_best_e = pt, et
+            
+            print(f" > 本階最佳: P={curr_best_p:.3f}, E={curr_best_e:.3f} | 得分: {curr_best_score:.4f}")
+            return curr_best_p, curr_best_e
+
+        best_score = -1.0
+        best_p, best_e = 0.5, 0.5
+
         print("\n" + "=" * 80)
-        print("🔍 搜尋最佳閾值")
+        print("[START] 啟動 2D 自動層級式門檻優化 (Double-Focus Search)")
         print("=" * 80)
-        
-        for promise_thresh in thresholds:
-            for evidence_thresh in thresholds:
-                # 計算相應的 F1-Score
-                # （實際實現需要在驗證集上計算）
-                # 這裡是簡化版本
-                
-                print(f"Promise: {promise_thresh:.1f}, Evidence: {evidence_thresh:.1f}")
-        
+
+        # 第一階段：粗略掃描
+        p1, e1 = search_2d((0.3, 0.7), (0.3, 0.7), 0.1, 0.1, "1: 初步定位")
+
+        # 第二階段：局部精搜尋
+        p2, e2 = search_2d((p1-0.1, p1+0.1), (e1-0.1, e1+0.1), 0.05, 0.05, "2: 中度精準")
+
+        # 第三階段：細微修正
+        p3, e3 = search_2d((p2-0.05, p2+0.05), (e2-0.05, e2+0.05), 0.025, 0.025, "3: 極致精準")
+
+        # 第四階段：最後定位
+        best_p, best_e = search_2d((p3-0.025, p3+0.025), (e2-0.025, e2+0.025), 0.01, 0.01, "4: 最後定位")
+
+        print("\n" + "=" * 80)
+        print(f"[SUCCESS] 2D 優化完成！")
+        print(f"最佳 Promise 門檻 : {best_p:.3f}")
+        print(f"最佳 Evidence 門檻: {best_e:.3f}")
+        print(f"預估最高綜合得分 : {best_score:.4f}")
         print("=" * 80)
-        return best_thresholds
+
+        
+        return {
+            'promise_threshold': float(best_p),
+            'evidence_threshold': float(best_e)
+        }

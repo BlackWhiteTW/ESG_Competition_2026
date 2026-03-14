@@ -16,7 +16,7 @@ def run_train_pipeline(
     gradient_accumulation_steps=2
 ):
     """執行完整訓練流水線"""
-    print_header("🚀 開始訓練流程")
+    print_header("[START] 開始訓練流程")
     print_system_info()
     
     # 載入資料
@@ -49,7 +49,7 @@ def run_inference_pipeline(
     output_format="csv"
 ):
     """執行完整推理流水線"""
-    print_header("🔮 開始推理流程")
+    print_header("[START] 開始推理流程")
     print_system_info()
     
     test_dataset = ESGDataset(json_file=json_file, model_name="hfl/chinese-roberta-wwm-ext", debug=False)
@@ -68,5 +68,5 @@ def run_inference_pipeline(
     else:
         inference_engine.export_predictions_to_json(predictions, output_file)
     
-    print(f"✅ 結果已匯出: {output_file}")
+    print(f"[SUCCESS] 結果已匯出: {output_file}")
     return output_file

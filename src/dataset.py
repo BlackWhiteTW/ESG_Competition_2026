@@ -44,7 +44,7 @@ class ESGDataset(Dataset):
         self.samples = self._preprocess_data(raw_data)
         
         if debug:
-            print(f"✅ 成功載入 {len(self.samples)} 筆訓練樣本")
+            print(f"[SUCCESS] 成功載入 {len(self.samples)} 筆訓練樣本")
     
     def _preprocess_data(self, raw_data: List[Dict]) -> List[Dict]:
         """
@@ -65,7 +65,7 @@ class ESGDataset(Dataset):
                     processed_samples.append(sample)
             except Exception as e:
                 if self.debug:
-                    print(f"⚠️  警告: ID {item.get('id', 'Unknown')} 處理失敗: {str(e)}")
+                    print(f"[WARNING] 警告: ID {item.get('id', 'Unknown')} 處理失敗: {str(e)}")
                 continue
         
         return processed_samples
@@ -96,7 +96,7 @@ class ESGDataset(Dataset):
             else:
                 # 搜尋失敗，作為無承諾處理
                 if self.debug:
-                    print(f"⚠️  無法在文章中找到承諾: '{promise_string[:30]}...'")
+                    print(f"[WARNING] 無法在文章中找到承諾: '{promise_string[:30]}...'")
                 promise_status = 'No'
         
         # ========== 處理 Evidence (證據) ==========
@@ -113,7 +113,7 @@ class ESGDataset(Dataset):
                 evidence_end_char = pos + len(evidence_string)
             else:
                 if self.debug:
-                    print(f"⚠️  無法在文章中找到證據: '{evidence_string[:30]}...'")
+                    print(f"[WARNING] 無法在文章中找到證據: '{evidence_string[:30]}...'")
                 evidence_status = 'No'
         
         # ========== 進行 Tokenization ==========
@@ -184,6 +184,26 @@ class ESGDataset(Dataset):
             'N/A': 3
         }.get(evidence_quality, 3)
         
+        # ========== 產生 BIO 標籤序列 ==========
+        # 0: O, 1: B, 2: I
+        seq_len = len(encodings['input_ids'])
+        promise_bio = [0] * seq_len
+        evidence_bio = [0] * seq_len
+        
+        # 標註 Promise BIO (如果存在)
+        if promise_status == 'Yes' and promise_start_token > 0:
+            promise_bio[promise_start_token] = 1  # B
+            for i in range(promise_start_token + 1, promise_end_token + 1):
+                if i < seq_len:
+                    promise_bio[i] = 2  # I
+                    
+        # 標註 Evidence BIO (如果存在)
+        if evidence_status == 'Yes' and evidence_start_token > 0:
+            evidence_bio[evidence_start_token] = 1  # B
+            for i in range(evidence_start_token + 1, evidence_end_token + 1):
+                if i < seq_len:
+                    evidence_bio[i] = 2  # I
+        
         return {
             'id': item.get('id'),
             'text': text,
@@ -192,15 +212,15 @@ class ESGDataset(Dataset):
             'token_type_ids': encodings.get('token_type_ids', [0] * len(encodings['input_ids'])),
             'offset_mapping': encodings['offset_mapping'],
             
-            # 承諾標籤
+            # 承諾標籤 (BIO)
             'promise_status': 1 if promise_status == 'Yes' else 0,
-            'promise_start': promise_start_token,
-            'promise_end': promise_end_token,
+            'promise_bio': promise_bio,
+            'promise_string_truth': promise_string if promise_status == 'Yes' else "",
             
-            # 證據標籤
+            # 證據標籤 (BIO)
             'evidence_status': 1 if evidence_status == 'Yes' else 0,
-            'evidence_start': evidence_start_token,
-            'evidence_end': evidence_end_token,
+            'evidence_bio': evidence_bio,
+            'evidence_string_truth': evidence_string if evidence_status == 'Yes' else "",
             
             # 分類標籤
             'esg_label': esg_label,
@@ -221,35 +241,19 @@ class ESGDataset(Dataset):
     ) -> int:
         """
         將字元索引轉換為 Token 索引
-        
-        offset_mapping: Tokenizer 返回的 (char_start, char_end) 對應表
-        char_idx: 原始字元位置
-        is_start: True 則找第一個包含此位置的 Token；False 則找最後一個
         """
-        if char_idx == 0:
+        if char_idx <= 0:
             return 0
         
         for token_idx, (start, end) in enumerate(offset_mapping):
-            if start == 0 and end == 0:  # 特殊 Token
-                continue
+            if start == 0 and end == 0: continue
             
             if is_start:
-                # 找第一個包含或超過 char_idx 的 Token
-                if start <= char_idx < end:
-                    return token_idx
-                if start >= char_idx:
-                    return token_idx
+                if start <= char_idx < end: return token_idx
+                if start >= char_idx: return token_idx
             else:
-                # 找最後一個包含或超過 char_idx 的 Token
-                if start < char_idx <= end:
-                    return token_idx
-                if start >= char_idx:
-                    return token_idx
-        
-        # 若超出範圍，返回最後一個有效 Token
-        for i in range(len(offset_mapping) - 1, -1, -1):
-            if offset_mapping[i] != (0, 0):
-                return i
+                if start < char_idx <= end: return token_idx
+                if start >= char_idx: return token_idx
         
         return 0
     
@@ -270,13 +274,11 @@ class ESGDataset(Dataset):
             
             # 承諾標籤
             'promise_status': torch.tensor(sample['promise_status'], dtype=torch.long),
-            'promise_start': torch.tensor(sample['promise_start'], dtype=torch.long),
-            'promise_end': torch.tensor(sample['promise_end'], dtype=torch.long),
+            'promise_bio': torch.tensor(sample['promise_bio'], dtype=torch.long),
             
             # 證據標籤
             'evidence_status': torch.tensor(sample['evidence_status'], dtype=torch.long),
-            'evidence_start': torch.tensor(sample['evidence_start'], dtype=torch.long),
-            'evidence_end': torch.tensor(sample['evidence_end'], dtype=torch.long),
+            'evidence_bio': torch.tensor(sample['evidence_bio'], dtype=torch.long),
             
             # 分類標籤
             'esg_label': torch.tensor(sample['esg_label'], dtype=torch.long),

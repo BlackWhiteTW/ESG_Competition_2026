@@ -9,7 +9,7 @@ def print_header(message: str):
 
 def print_system_info():
     """印出系統資訊"""
-    print_header("📊 系統資訊")
+    print_header("系統資訊")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"計算設備: {device}")

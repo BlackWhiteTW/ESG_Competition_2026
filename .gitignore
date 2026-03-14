@@ -1,5 +1,5 @@
 /.continue
 /.venv
 
-/models/checkpoints/**.*
+/models/checkpoints/**/**.pt
 # 避免上傳檔案過大

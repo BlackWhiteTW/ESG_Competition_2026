@@ -11,7 +11,7 @@ import torch
 from datetime import datetime
 
 # 將 src 目錄加入 Python 路徑
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 from dataset import ESGDataset
 from model import ESGMultiTaskModel
@@ -47,7 +47,7 @@ def print_header(message: str):
 def print_system_info():
     """印出系統資訊"""
     print("\n" + "=" * 80)
-    print("📊 系統資訊")
+    print("系統資訊")
     print("=" * 80)
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -66,54 +66,54 @@ def train_model(
     json_file: str = "data/vpesg4k_train_1000 V1.json",
     num_epochs: int = 16,
     batch_size: int = 8,
-    learning_rate: float = 2e-5,
+    learning_rate: float = 1e-5,
     gradient_accumulation_steps: int = 2,
     warmup_ratio: float = 0.08,
-    early_stopping_patience: int = 3,
+    early_stopping_patience: int = 5,
     min_delta: float = 0.0,
     train_scope: str = "full-model"
 ):
     """訓練模型主函式"""
-    print_header("🚀 開始訓練流程")
+    print_header("[START] 開始訓練流程")
     print_system_info()
-    
+
     # ========== 載入資料 ==========
-    print_header("📚 載入訓練資料")
-    
+    print_header("[DATA] 載入訓練資料")
+
     if not os.path.exists(json_file):
-        print(f"❌ 錯誤：找不到訓練資料: {json_file}")
+        print(f"[ERROR] 錯誤：找不到訓練資料: {json_file}")
         return
-    
+
     dataset = ESGDataset(
         json_file=json_file,
         model_name="hfl/chinese-roberta-wwm-ext",
         max_length=256,
         debug=True
     )
-    
-    print(f"✅ 資料集已載入: {len(dataset)} 筆樣本")
-    
+
+    print(f"[SUCCESS] 資料集已載入: {len(dataset)} 筆樣本")
+
     # ========== 建立資料加載器 ==========
-    print_header("⚙️  建立資料加載器")
-    
+    print_header("[LOADER] 建立資料加載器")
+
     train_dataloader, val_dataloader = create_data_splits(
         dataset,
         train_ratio=0.8,
         batch_size=batch_size,
         seed=42
     )
-    
+
     # ========== 建立模型 ==========
-    print_header("🧠 初始化模型")
-    
+    print_header("[MODEL] 初始化模型")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = ESGMultiTaskModel(
         model_name="hfl/chinese-roberta-wwm-ext",
-        dropout_rate=0.1
+        dropout_rate=0.3
     )
     
     # ========== 建立訓練器 ==========
-    print_header("⚡ 初始化訓練器")
+    print_header("初始化訓練器")
     
     trainer = ESGTrainer(
         model=model,
@@ -131,18 +131,18 @@ def train_model(
     )
     
     # ========== 開始訓練 ==========
-    print_header("🔥 開始訓練")
+    print_header("開始訓練")
     best_checkpoint = os.path.join(trainer.checkpoint_dir, "best_model.pt")
     
     if resume_checkpoint and os.path.exists(resume_checkpoint):
-        print(f"\n⏮️  從檢查點恢復訓練: {resume_checkpoint}\n")
+        print(f"\n從檢查點恢復訓練: {resume_checkpoint}\n")
         trainer.train(resume_from_checkpoint=resume_checkpoint)
     else:
         # 如果是 fresh 模式，resume_checkpoint 會是 None
-        print(f"\n✨ 從頭開始新的訓練流程...")
+        print(f"\n從頭開始新的訓練流程...")
         trainer.train(resume_from_checkpoint=None)
     
-    print_header("✅ 訓練完成")
+    print_header("訓練完成")
 
 
 if __name__ == "__main__":

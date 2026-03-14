@@ -10,7 +10,7 @@ import random
 from datetime import datetime
 
 # 將 src 目錄加入 Python 路徑
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 from dataset import ESGDataset
 from model import ESGMultiTaskModel
@@ -20,7 +20,7 @@ from inference import ESGInference
 def print_comparison(title: str, pred: str, truth: str = None):
     """格式化輸出對比結果"""
     if truth is not None:
-        status = "✅" if pred == truth else "❌"
+        status = "[PASS]" if pred == truth else "[FAIL]"
         print(f"  {title:15s}: {pred:10s} (標籤: {truth:10s}) {status}")
     else:
         print(f"  {title:15s}: {pred}")
@@ -34,7 +34,7 @@ def inspect_results(
 ):
     """檢視模型判斷結果"""
     print("\n" + "=" * 80)
-    print("🔍 模型判斷結果檢視")
+    print("[INSPECT] 模型判斷結果檢視")
     print("=" * 80)
     
     # ========== 載入資料 ==========
@@ -107,7 +107,7 @@ def inspect_results(
             print(f"  證據片段: \"{res['evidence_string']}\"")
             
     print("\n" + "=" * 80)
-    print(f"✅ 已完成 {len(selected_preds)} 筆數據的檢視")
+    print(f"[SUCCESS] 已完成 {len(selected_preds)} 筆數據的檢視")
     print("=" * 80)
 
 
