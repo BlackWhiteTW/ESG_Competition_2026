@@ -1,4 +1,5 @@
 {
-    "promise_threshold": 0.505,
-    "evidence_threshold": 0.12499999999999997
+    "promise_threshold": 0.25,
+    "evidence_threshold": 0.51,
+    "estimated_score": 0.58375
 }

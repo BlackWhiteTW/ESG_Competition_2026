@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import AutoModel
 from typing import Dict, Tuple
 
@@ -8,11 +9,22 @@ from tasks.detection import ESGDetectionHead
 from tasks.extraction import ESGExtractionHead
 from tasks.classification import ESGClassificationHead
 
+class FocalLoss(nn.Module):
+    """
+    競賽級 Focal Loss：解決樣本不平衡與假陽性問題
+    """
+    def __init__(self, alpha=1, gamma=2):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt)**self.gamma * ce_loss
+        return focal_loss.mean()
+
 class ESGMultiTaskModel(nn.Module):
-    """
-    ESG 永續承諾驗證多任務模型 (BIO 序列標記版本 - 強制 Large 版)
-    """
-    
     def __init__(
         self,
         model_name: str = "hfl/chinese-roberta-wwm-ext-large",
@@ -20,25 +32,17 @@ class ESGMultiTaskModel(nn.Module):
         num_labels_esg: int = 3,
         num_labels_timeline: int = 5,
         num_labels_quality: int = 4,
-        dropout_rate: float = 0.1
+        dropout_rate: float = 0.3
     ):
         super().__init__()
-        
-        print(f"[INFO] 正在載入核心編碼器: {model_name} (維度: {hidden_size})")
-        
-        # 載入核心編碼器
+        print(f"[INFO] 正在載入核心編碼器: {model_name}")
         self.encoder = AutoModel.from_pretrained(model_name)
         
-        # 強制檢查維度對齊
-        encoder_hidden_size = self.encoder.config.hidden_size
-        if encoder_hidden_size != hidden_size:
-            print(f"[WARNING] 偵測到維度不匹配！修正 hidden_size 為 {encoder_hidden_size}")
-            hidden_size = encoder_hidden_size
-
-        self.hidden_size = hidden_size
+        # 強制維度對齊
+        hidden_size = self.encoder.config.hidden_size
         self.dropout = nn.Dropout(dropout_rate)
         
-        # ========== 模組化任務頭組合 ==========
+        # 任務頭
         self.promise_detection = ESGDetectionHead(hidden_size, dropout_rate)
         self.promise_extraction = ESGExtractionHead(hidden_size, dropout_rate)
         self.evidence_detection = ESGDetectionHead(hidden_size, dropout_rate)
@@ -47,85 +51,60 @@ class ESGMultiTaskModel(nn.Module):
         self.timeline_classifier = ESGClassificationHead(hidden_size, num_labels_timeline, dropout_rate)
         self.quality_classifier = ESGClassificationHead(hidden_size, num_labels_quality, dropout_rate)
         
-        self.ce_loss = nn.CrossEntropyLoss()
+        # 損失函數：偵測任務用 Focal Loss，其餘用 Label Smoothing CE
+        self.focal_loss = FocalLoss(gamma=2.0)
+        self.ce_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
     
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-        token_type_ids: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
-        encoder_output = self.encoder(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids
-        )
+    def forward(self, input_ids, attention_mask, token_type_ids):
+        encoder_output = self.encoder(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
         sequence_output = encoder_output.last_hidden_state
         cls_output = sequence_output[:, 0, :]
         
-        outputs = {}
-        outputs['promise_logits'] = self.promise_detection(self.dropout(cls_output))
-        outputs['promise_bio_logits'] = self.promise_extraction(sequence_output)
-        outputs['evidence_logits'] = self.evidence_detection(self.dropout(cls_output))
-        outputs['evidence_bio_logits'] = self.evidence_extraction(sequence_output)
-        outputs['esg_logits'] = self.esg_classifier(self.dropout(cls_output))
-        outputs['timeline_logits'] = self.timeline_classifier(self.dropout(cls_output))
-        outputs['quality_logits'] = self.quality_classifier(self.dropout(cls_output))
-        return outputs
+        return {
+            'promise_logits': self.promise_detection(self.dropout(cls_output)),
+            'promise_bio_logits': self.promise_extraction(sequence_output),
+            'evidence_logits': self.evidence_detection(self.dropout(cls_output)),
+            'evidence_bio_logits': self.evidence_extraction(sequence_output),
+            'esg_logits': self.esg_classifier(self.dropout(cls_output)),
+            'timeline_logits': self.timeline_classifier(self.dropout(cls_output)),
+            'quality_logits': self.quality_classifier(self.dropout(cls_output))
+        }
     
     def compute_loss(self, outputs, batch, task_weights=None):
         if task_weights is None:
+            # 專業比例：保護 Gatekeeper (Promise/Evidence Status)
             task_weights = {
-                'promise_loss': 1.0, 'promise_bio_loss': 5.0,
-                'evidence_loss': 1.0, 'evidence_bio_loss': 5.0,
-                'esg_loss': 2.0, 'timeline_loss': 1.0, 'quality_loss': 1.0
+                'promise_loss': 15.0,      # 絕對核心
+                'promise_bio_loss': 1.0, 
+                'evidence_loss': 8.0, 
+                'evidence_bio_loss': 1.0, 
+                'esg_loss': 2.0, 
+                'timeline_loss': 3.0, 
+                'quality_loss': 1.0
             }
         
         losses = {}
         total_loss = torch.tensor(0.0, device=outputs['promise_logits'].device)
         
-        # 1. Promise Detection
-        loss = self.ce_loss(outputs['promise_logits'], batch['promise_status'])
-        losses['promise_loss'] = loss.item()
-        total_loss += task_weights['promise_loss'] * loss
+        # 使用 Focal Loss 處理關鍵判定
+        l1 = self.focal_loss(outputs['promise_logits'], batch['promise_status'])
+        l3 = self.focal_loss(outputs['evidence_logits'], batch['evidence_status'])
         
-        # 2. Promise BIO
-        logits = outputs['promise_bio_logits'].view(-1, 3)
-        targets = batch['promise_bio'].view(-1)
-        loss = self.ce_loss(logits, targets)
-        losses['promise_bio_loss'] = loss.item()
-        total_loss += task_weights['promise_bio_loss'] * loss
+        total_loss += task_weights['promise_loss'] * l1
+        total_loss += task_weights['evidence_loss'] * l3
         
-        # 3. Evidence Detection
-        loss = self.ce_loss(outputs['evidence_logits'], batch['evidence_status'])
-        losses['evidence_loss'] = loss.item()
-        total_loss += task_weights['evidence_loss'] * loss
+        # 其餘任務使用 CE Loss
+        total_loss += task_weights['promise_bio_loss'] * self.ce_loss(outputs['promise_bio_logits'].view(-1, 3), batch['promise_bio'].view(-1))
+        total_loss += task_weights['evidence_bio_loss'] * self.ce_loss(outputs['evidence_bio_logits'].view(-1, 3), batch['evidence_bio'].view(-1))
+        total_loss += task_weights['esg_loss'] * self.ce_loss(outputs['esg_logits'], batch['esg_label'])
+        
+        mask_p = (batch['promise_status'] == 1)
+        if mask_p.any():
+            total_loss += task_weights['timeline_loss'] * self.ce_loss(outputs['timeline_logits'][mask_p], batch['timeline_label'][mask_p])
             
-        # 4. Evidence BIO
-        logits = outputs['evidence_bio_logits'].view(-1, 3)
-        targets = batch['evidence_bio'].view(-1)
-        loss = self.ce_loss(logits, targets)
-        losses['evidence_bio_loss'] = loss.item()
-        total_loss += task_weights['evidence_bio_loss'] * loss
-                
-        # 5. ESG 分類
-        loss = self.ce_loss(outputs['esg_logits'], batch['esg_label'])
-        losses['esg_loss'] = loss.item()
-        total_loss += task_weights['esg_loss'] * loss
-            
-        # 6. Timeline 分類 (有承諾才算)
-        mask = (batch['promise_status'] == 1)
-        if mask.any():
-            loss = self.ce_loss(outputs['timeline_logits'][mask], batch['timeline_label'][mask])
-            losses['timeline_loss'] = loss.item()
-            total_loss += task_weights['timeline_loss'] * loss
-
-        # 7. Quality 分類 (有證據才算)
-        mask = (batch['evidence_status'] == 1)
-        if mask.any():
-            loss = self.ce_loss(outputs['quality_logits'][mask], batch['quality_label'][mask])
-            losses['quality_loss'] = loss.item()
-            total_loss += task_weights['quality_loss'] * loss
+        mask_e = (batch['evidence_status'] == 1)
+        if mask_e.any():
+            total_loss += task_weights['quality_loss'] * self.ce_loss(outputs['quality_logits'][mask_e], batch['quality_label'][mask_e])
         
         losses['total_loss'] = total_loss.item()
         return total_loss, losses

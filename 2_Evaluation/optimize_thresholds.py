@@ -26,7 +26,7 @@ def optimize():
     # 1. 載入驗證集
     dataset = ESGDataset(
         json_file=args.data,
-        model_name="hfl/chinese-roberta-wwm-ext",
+        model_name="hfl/chinese-roberta-wwm-ext-large",
         max_length=256,
         debug=False
     )
@@ -36,8 +36,12 @@ def optimize():
     
     # 2. 載入模型與推理引擎
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = ESGMultiTaskModel(model_name="hfl/chinese-roberta-wwm-ext")
-    inference_engine = ESGInference(model, args.checkpoint, device)
+    model = ESGMultiTaskModel(model_name="hfl/chinese-roberta-wwm-ext-large")
+    inference_engine = ESGInference(
+        model=model, 
+        checkpoint_paths=[args.checkpoint], 
+        device=device
+    )
     
     # 3. 初始化評分器與優化器
     evaluator = ESGMockEvaluator(inference_engine)

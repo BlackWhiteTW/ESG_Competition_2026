@@ -74,14 +74,14 @@ def train_model(
     train_scope: str = "full-model"
 ):
     """訓練模型主函式"""
-    print_header("[START] 開始訓練流程")
+    print_header("開始訓練流程")
     print_system_info()
 
     # ========== 載入資料 ==========
-    print_header("[DATA] 載入訓練資料")
+    print_header("載入訓練資料")
 
     if not os.path.exists(json_file):
-        print(f"[ERROR] 錯誤：找不到訓練資料: {json_file}")
+        print(f"錯誤：找不到訓練資料: {json_file}")
         return
 
     dataset = ESGDataset(
@@ -91,10 +91,10 @@ def train_model(
         debug=True
     )
 
-    print(f"[SUCCESS] 資料集已載入: {len(dataset)} 筆樣本")
+    print(f"資料集已載入: {len(dataset)} 筆樣本")
 
     # ========== 建立資料加載器 ==========
-    print_header("[LOADER] 建立資料加載器")
+    print_header("建立資料加載器")
 
     train_dataloader, val_dataloader = create_data_splits(
         dataset,
@@ -104,7 +104,7 @@ def train_model(
     )
 
     # ========== 建立模型 ==========
-    print_header("[MODEL] 初始化模型")
+    print_header("初始化模型")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = ESGMultiTaskModel(

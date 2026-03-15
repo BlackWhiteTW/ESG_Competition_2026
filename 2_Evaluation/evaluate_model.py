@@ -40,7 +40,7 @@ def evaluate_model(
     # ========== 載入資料並分割 ==========
     dataset = ESGDataset(
         json_file=json_file,
-        model_name="hfl/chinese-roberta-wwm-ext",
+        model_name="hfl/chinese-roberta-wwm-ext-large",
         max_length=256,
         debug=False
     )
@@ -60,7 +60,7 @@ def evaluate_model(
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = ESGMultiTaskModel(
-        model_name="hfl/chinese-roberta-wwm-ext"
+        model_name="hfl/chinese-roberta-wwm-ext-large"
     )
     
     if os.path.exists(checkpoint_path):
@@ -77,7 +77,11 @@ def evaluate_model(
     # ========== [新增] 執行模擬評分與錯誤歸納 ==========
     # 支援單一模型或集成模型
     checkpoint_paths = [checkpoint_path]
-    inference_engine = ESGInference(model, checkpoint_paths, device)
+    inference_engine = ESGInference(
+        model=model, 
+        checkpoint_paths=checkpoint_paths, 
+        device=device
+    )
     evaluator = ESGMockEvaluator(inference_engine)
     
     # 從 DataLoader 中還原原始的 Dataset 物件進行分析

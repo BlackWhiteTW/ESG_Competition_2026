@@ -53,7 +53,7 @@ def inference_model(
     # ========== 載入資料 ==========
     test_dataset = ESGDataset(
         json_file=json_file,
-        model_name="hfl/chinese-roberta-wwm-ext",
+        model_name="hfl/chinese-roberta-wwm-ext-large",
         max_length=256,
         debug=False
     )
@@ -64,7 +64,7 @@ def inference_model(
     print_header("載入模型架構")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = ESGMultiTaskModel(model_name="hfl/chinese-roberta-wwm-ext")
+    model = ESGMultiTaskModel(model_name="hfl/chinese-roberta-wwm-ext-large")
     
     inference_engine = ESGInference(
         model=model,
