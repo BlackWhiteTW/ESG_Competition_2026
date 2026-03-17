@@ -1,5 +1,12 @@
 /.continue
 /.venv
 
-/models/checkpoints/**/**.pt
 # 避免上傳檔案過大
+/models/*.pt
+/models/**/*.pt
+
+**/__pycache__/
+*.py[cod]
+
+data/**
+docs/**

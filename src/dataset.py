@@ -3,29 +3,30 @@ import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 from typing import List, Dict, Tuple, Optional
+import config
 
 
 class ESGDataset(Dataset):
     """
     ESG 永續承諾驗證資料集
-    
+
     核心功能：
     1. 讀取官方 JSON 格式的標註資料
     2. 進行字元索引對齊（Character-level to Token-level）
     3. 完整處理缺失標籤、重複承諾等邊界情況
     4. 輸出 PyTorch 張量供模型訓練
     """
-    
+
     def __init__(
         self,
         json_file: str,
-        model_name: str = "hfl/chinese-roberta-wwm-ext",
-        max_length: int = 512,
-        debug: bool = False
+        model_name: str = config.MODEL_NAME,
+        max_length: int = config.MAX_SEQ_LENGTH,
+        debug: bool = False,
     ):
         """
         初始化資料集
-        
+
         Args:
             json_file: 官方提供的 JSON 訓練資料路徑
             model_name: Hugging Face 預訓練模型路徑
@@ -35,21 +36,21 @@ class ESGDataset(Dataset):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.max_length = max_length
         self.debug = debug
-        
+
         # 讀取 JSON 檔案
-        with open(json_file, 'r', encoding='utf-8') as f:
+        with open(json_file, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
-        
+
         # 資料預處理與標籤對齊
         self.samples = self._preprocess_data(raw_data)
-        
+
         if debug:
             print(f"[SUCCESS] 成功載入 {len(self.samples)} 筆訓練樣本")
-    
+
     def _preprocess_data(self, raw_data: List[Dict]) -> List[Dict]:
         """
         核心資料處理函式
-        
+
         關鍵步驟：
         1. 從字串反推字元位置 (promise_string -> start/end indices)
         2. 處理 evidence_string 的位置對齊
@@ -57,7 +58,7 @@ class ESGDataset(Dataset):
         4. 格式驗證：確保所有位置都在有效範圍內
         """
         processed_samples = []
-        
+
         for item in raw_data:
             try:
                 sample = self._process_single_item(item)
@@ -65,29 +66,31 @@ class ESGDataset(Dataset):
                     processed_samples.append(sample)
             except Exception as e:
                 if self.debug:
-                    print(f"[WARNING] 警告: ID {item.get('id', 'Unknown')} 處理失敗: {str(e)}")
+                    print(
+                        f"[WARNING] 警告: ID {item.get('id', 'Unknown')} 處理失敗: {str(e)}"
+                    )
                 continue
-        
+
         return processed_samples
-    
+
     def _process_single_item(self, item: Dict) -> Optional[Dict]:
         """
         處理單一訓練樣本
-        
+
         陷阱 1: 承諾字串可能在原文中出現多次，須根據上下文判斷
         陷阱 2: 證據為空時，不能給 None，應指向 [CLS] Token
         陷阱 3: 字元位置需精準轉換為 Token 位置
         """
-        text = item['data'].strip()
-        
+        text = item["data"].strip()
+
         # ========== 處理 Promise (承諾) ==========
-        promise_status = item.get('promise_status', 'No')
-        promise_string = item.get('promise_string', '').strip()
-        
+        promise_status = item.get("promise_status", "No")
+        promise_string = item.get("promise_string", "").strip()
+
         promise_start_char = 0
         promise_end_char = 0
-        
-        if promise_status == 'Yes' and promise_string:
+
+        if promise_status == "Yes" and promise_string:
             # 從原文中搜尋承諾字串
             pos = text.find(promise_string)
             if pos != -1:
@@ -97,199 +100,191 @@ class ESGDataset(Dataset):
                 # 搜尋失敗，作為無承諾處理
                 if self.debug:
                     print(f"[WARNING] 無法在文章中找到承諾: '{promise_string[:30]}...'")
-                promise_status = 'No'
-        
+                promise_status = "No"
+
         # ========== 處理 Evidence (證據) ==========
-        evidence_status = item.get('evidence_status', 'No')
-        evidence_string = item.get('evidence_string', '').strip()
-        
+        evidence_status = item.get("evidence_status", "No")
+        evidence_string = item.get("evidence_string", "").strip()
+
         evidence_start_char = 0
         evidence_end_char = 0
-        
-        if evidence_status == 'Yes' and evidence_string:
+
+        if evidence_status == "Yes" and evidence_string:
             pos = text.find(evidence_string)
             if pos != -1:
                 evidence_start_char = pos
                 evidence_end_char = pos + len(evidence_string)
             else:
                 if self.debug:
-                    print(f"[WARNING] 無法在文章中找到證據: '{evidence_string[:30]}...'")
-                evidence_status = 'No'
-        
+                    print(
+                        f"[WARNING] 無法在文章中找到證據: '{evidence_string[:30]}...'"
+                    )
+                evidence_status = "No"
+
         # ========== 進行 Tokenization ==========
         # 使用 Hugging Face Tokenizer 進行分詞，保留字元偏移映射
         encodings = self.tokenizer(
             text,
             max_length=self.max_length,
-            padding='max_length',
+            padding="max_length",
             truncation=True,
             return_offsets_mapping=True,
-            add_special_tokens=True
+            add_special_tokens=True,
         )
-        
+
         # ========== 字元索引轉換為 Token 索引 ==========
         promise_start_token = self._char_idx_to_token_idx(
-            encodings['offset_mapping'], 
-            promise_start_char,
-            is_start=True
+            encodings["offset_mapping"], promise_start_char, is_start=True
         )
         promise_end_token = self._char_idx_to_token_idx(
-            encodings['offset_mapping'], 
-            promise_end_char,
-            is_start=False
+            encodings["offset_mapping"], promise_end_char, is_start=False
         )
-        
+
         evidence_start_token = self._char_idx_to_token_idx(
-            encodings['offset_mapping'], 
-            evidence_start_char,
-            is_start=True
+            encodings["offset_mapping"], evidence_start_char, is_start=True
         )
         evidence_end_token = self._char_idx_to_token_idx(
-            encodings['offset_mapping'], 
-            evidence_end_char,
-            is_start=False
+            encodings["offset_mapping"], evidence_end_char, is_start=False
         )
-        
+
         # 若無承諾或證據，設定位置為 [CLS] Token (索引 0)
-        if promise_status == 'No':
+        if promise_status == "No":
             promise_start_token = 0
             promise_end_token = 0
-        
-        if evidence_status == 'No':
+
+        if evidence_status == "No":
             evidence_start_token = 0
             evidence_end_token = 0
-        
+
         # ========== 提取 ESG 分類標籤 ==========
-        esg_type = item.get('esg_type', 'S')
-        esg_label = {'E': 0, 'S': 1, 'G': 2}.get(esg_type, 1)
-        
+        esg_type = item.get("esg_type", "S")
+        esg_label = {"E": 0, "S": 1, "G": 2}.get(esg_type, 1)
+
         # ========== 提取時間軸標籤 ==========
-        verification_timeline = item.get('verification_timeline', 'N/A')
+        verification_timeline = item.get("verification_timeline", "N/A")
         # 0: already, 1: within_2_years, 2: between_2_and_5_years, 3: more_than_5_years, 4: N/A
         timeline_label = {
-            'already': 0,
-            'within_2_years': 1,
-            'between_2_and_5_years': 2,
-            'more_than_5_years': 3,
-            'N/A': 4
+            "already": 0,
+            "within_2_years": 1,
+            "between_2_and_5_years": 2,
+            "more_than_5_years": 3,
+            "N/A": 4,
         }.get(verification_timeline, 4)
-        
+
         # ========== 提取證據品質標籤 ==========
-        evidence_quality = item.get('evidence_quality', 'N/A')
+        evidence_quality = item.get("evidence_quality", "N/A")
         # 0: Clear, 1: Not Clear, 2: Misleading, 3: N/A
-        quality_label = {
-            'Clear': 0,
-            'Not Clear': 1,
-            'Misleading': 2,
-            'N/A': 3
-        }.get(evidence_quality, 3)
-        
+        quality_label = {"Clear": 0, "Not Clear": 1, "Misleading": 2, "N/A": 3}.get(
+            evidence_quality, 3
+        )
+
         # ========== 產生 BIO 標籤序列 ==========
         # 0: O, 1: B, 2: I
-        seq_len = len(encodings['input_ids'])
+        seq_len = len(encodings["input_ids"])
         promise_bio = [0] * seq_len
         evidence_bio = [0] * seq_len
-        
+
         # 標註 Promise BIO (如果存在)
-        if promise_status == 'Yes' and promise_start_token > 0:
+        if promise_status == "Yes" and promise_start_token > 0:
             promise_bio[promise_start_token] = 1  # B
             for i in range(promise_start_token + 1, promise_end_token + 1):
                 if i < seq_len:
                     promise_bio[i] = 2  # I
-                    
+
         # 標註 Evidence BIO (如果存在)
-        if evidence_status == 'Yes' and evidence_start_token > 0:
+        if evidence_status == "Yes" and evidence_start_token > 0:
             evidence_bio[evidence_start_token] = 1  # B
             for i in range(evidence_start_token + 1, evidence_end_token + 1):
                 if i < seq_len:
                     evidence_bio[i] = 2  # I
-        
+
         return {
-            'id': item.get('id'),
-            'text': text,
-            'input_ids': encodings['input_ids'],
-            'attention_mask': encodings['attention_mask'],
-            'token_type_ids': encodings.get('token_type_ids', [0] * len(encodings['input_ids'])),
-            'offset_mapping': encodings['offset_mapping'],
-            
+            "id": item.get("id"),
+            "text": text,
+            "input_ids": encodings["input_ids"],
+            "attention_mask": encodings["attention_mask"],
+            "token_type_ids": encodings.get(
+                "token_type_ids", [0] * len(encodings["input_ids"])
+            ),
+            "offset_mapping": encodings["offset_mapping"],
             # 承諾標籤 (BIO)
-            'promise_status': 1 if promise_status == 'Yes' else 0,
-            'promise_bio': promise_bio,
-            'promise_string_truth': promise_string if promise_status == 'Yes' else "",
-            
+            "promise_status": 1 if promise_status == "Yes" else 0,
+            "promise_bio": promise_bio,
+            "promise_string_truth": promise_string if promise_status == "Yes" else "",
             # 證據標籤 (BIO)
-            'evidence_status': 1 if evidence_status == 'Yes' else 0,
-            'evidence_bio': evidence_bio,
-            'evidence_string_truth': evidence_string if evidence_status == 'Yes' else "",
-            
+            "evidence_status": 1 if evidence_status == "Yes" else 0,
+            "evidence_bio": evidence_bio,
+            "evidence_string_truth": evidence_string
+            if evidence_status == "Yes"
+            else "",
             # 分類標籤
-            'esg_label': esg_label,
-            'timeline_label': timeline_label,
-            'quality_label': quality_label,
-            
+            "esg_label": esg_label,
+            "timeline_label": timeline_label,
+            "quality_label": quality_label,
             # 額外資訊 (Metadata)
-            'company': item.get('company', ''),
-            'url': item.get('company_source', ''),
-            'page_number': item.get('page_number', 0)
+            "company": item.get("company", ""),
+            "url": item.get("company_source", ""),
+            "page_number": item.get("page_number", 0),
         }
-    
+
     def _char_idx_to_token_idx(
         self,
         offset_mapping: List[Tuple[int, int]],
         char_idx: int,
-        is_start: bool = True
+        is_start: bool = True,
     ) -> int:
         """
         將字元索引轉換為 Token 索引
         """
         if char_idx <= 0:
             return 0
-        
+
         for token_idx, (start, end) in enumerate(offset_mapping):
-            if start == 0 and end == 0: continue
-            
+            if start == 0 and end == 0:
+                continue
+
             if is_start:
-                if start <= char_idx < end: return token_idx
-                if start >= char_idx: return token_idx
+                if start <= char_idx < end:
+                    return token_idx
+                if start >= char_idx:
+                    return token_idx
             else:
-                if start < char_idx <= end: return token_idx
-                if start >= char_idx: return token_idx
-        
+                if start < char_idx <= end:
+                    return token_idx
+                if start >= char_idx:
+                    return token_idx
+
         return 0
-    
+
     def __len__(self) -> int:
         return len(self.samples)
-    
+
     def __getitem__(self, idx: int) -> Dict:
         """
         返回單一樣本（張量化）
         """
         sample = self.samples[idx]
-        
+
         return {
-            'input_ids': torch.tensor(sample['input_ids'], dtype=torch.long),
-            'attention_mask': torch.tensor(sample['attention_mask'], dtype=torch.long),
-            'token_type_ids': torch.tensor(sample['token_type_ids'], dtype=torch.long),
-            'offset_mapping': torch.tensor(sample['offset_mapping'], dtype=torch.long),
-            
-            # 承諾標籤
-            'promise_status': torch.tensor(sample['promise_status'], dtype=torch.long),
-            'promise_bio': torch.tensor(sample['promise_bio'], dtype=torch.long),
-            
-            # 證據標籤
-            'evidence_status': torch.tensor(sample['evidence_status'], dtype=torch.long),
-            'evidence_bio': torch.tensor(sample['evidence_bio'], dtype=torch.long),
-            
-            # 分類標籤
-            'esg_label': torch.tensor(sample['esg_label'], dtype=torch.long),
-            'timeline_label': torch.tensor(sample['timeline_label'], dtype=torch.long),
-            'quality_label': torch.tensor(sample['quality_label'], dtype=torch.long),
-            
-            'id': sample['id'],
-            'text': sample['text'],
-            'company': sample['company'],
-            'url': sample['url'],
-            'page_number': sample['page_number']
+            "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long),
+            "attention_mask": torch.tensor(sample["attention_mask"], dtype=torch.long),
+            "token_type_ids": torch.tensor(sample["token_type_ids"], dtype=torch.long),
+            "offset_mapping": torch.tensor(sample["offset_mapping"], dtype=torch.long),
+            # 標籤
+            "promise_status": torch.tensor(sample["promise_status"], dtype=torch.long),
+            "promise_bio": torch.tensor(sample["promise_bio"], dtype=torch.long),
+            "evidence_status": torch.tensor(
+                sample["evidence_status"], dtype=torch.long
+            ),
+            "evidence_bio": torch.tensor(sample["evidence_bio"], dtype=torch.long),
+            "esg_label": torch.tensor(sample["esg_label"], dtype=torch.long),
+            "timeline_label": torch.tensor(sample["timeline_label"], dtype=torch.long),
+            "quality_label": torch.tensor(sample["quality_label"], dtype=torch.long),
+            # 原始資訊 (關鍵：欄位名稱需與官方 JSON 匹配)
+            "id": sample.get("id", 0),
+            "text": sample.get("text", ""),
+            "url": sample.get("url", ""),
+            "page_number": sample.get("page_number", 0),
         }
 
 
