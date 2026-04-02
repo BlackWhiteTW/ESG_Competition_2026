@@ -55,41 +55,36 @@ def main():
             "K-Fold Training",
         )
 
-    run_step([python_cmd, "scripts/merge_models.py"], "Model Merging")
-
-    stitched_model = config.DEFAULT_CHECKPOINT
+    # 放棄融合策略，直接進入集成推理與優化
+    # 這裡傳入 None 或特定路徑並不重要，因為 run_inference.py 與 evaluate_model.py 
+    # 內建了自動偵測 models/best_model_*.pt 並啟動集成模式的邏輯。
+    
     run_step(
         [
             python_cmd,
             "scripts/optimize_thresholds.py",
-            "--checkpoint",
-            stitched_model,
             "--data",
             args.data,
         ],
-        "Threshold Optimization",
+        "Threshold Optimization (Ensemble Mode)",
     )
     run_step(
         [
             python_cmd,
             "scripts/run_inference.py",
-            "--checkpoint",
-            stitched_model,
             "--data",
             args.data,
         ],
-        "Final Inference",
+        "Final Inference (Ensemble Mode)",
     )
     run_step(
         [
             python_cmd,
             "scripts/evaluate_model.py",
-            "--checkpoint",
-            stitched_model,
             "--data",
             args.data,
         ],
-        "Validation",
+        "Validation (Ensemble Mode)",
     )
 
     print(f"\n[FINISH] Overall time: {(time.time() - overall_start) / 60:.2f} mins")

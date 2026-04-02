@@ -36,11 +36,12 @@ class ESGInference:
         else:
             self.checkpoint_paths = [p for p in checkpoint_paths if os.path.exists(p)]
 
-        # 預先載入所有權重到記憶體中，提升推理速度
+        # 預先載入所有權重到系統記憶體 (CPU) 中，避免 VRAM 爆炸
         self.model_weights = []
         for ckpt in self.checkpoint_paths:
             if os.path.exists(ckpt):
-                state = torch.load(ckpt, map_location=device, weights_only=False)
+                # 關鍵修改：map_location="cpu"
+                state = torch.load(ckpt, map_location="cpu", weights_only=False)
                 self.model_weights.append(state["model_state_dict"])
 
         if not self.model_weights:

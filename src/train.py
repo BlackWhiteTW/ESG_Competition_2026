@@ -115,6 +115,8 @@ class ESGTrainer:
                 k: v.to(self.device) if isinstance(v, torch.Tensor) else v
                 for k, v in batch.items()
             }
+            
+            # 使用混合精度訓練
             with autocast(
                 device_type=("cuda" if "cuda" in self.device else "cpu"),
                 enabled=self.use_amp,
@@ -123,17 +125,24 @@ class ESGTrainer:
                     batch["input_ids"], batch["attention_mask"], batch["token_type_ids"]
                 )
                 loss, _ = self.model.compute_loss(outputs, batch)
+                # 根據累積步數縮放損失
                 loss = loss / self.gradient_accumulation_steps
 
             self.scaler.scale(loss).backward()
 
-            if (step + 1) % self.gradient_accumulation_steps == 0:
+            # 達到累積步數或到達資料末尾時更新權重
+            if (step + 1) % self.gradient_accumulation_steps == 0 or (step + 1) == len(self.train_dataloader):
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                
+                # 執行更新
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-                self.optimizer.zero_grad()
+                
+                # 修正：在 optimizer.step 之後更新 scheduler
                 self.scheduler.step()
+                self.optimizer.zero_grad()
+                
                 total_loss += loss.item() * self.gradient_accumulation_steps
 
             progress_bar.set_postfix(
